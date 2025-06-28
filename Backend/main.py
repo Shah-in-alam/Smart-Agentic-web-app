@@ -22,7 +22,7 @@ app = FastAPI(title="Smart Agentic Web App API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,26 +49,32 @@ async def upload_files(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
+    logger.info(f"Starting upload processing for {len(files)} files")
     combined_df = pd.DataFrame()
     processed_files = []
     errors = []
 
     for i, file in enumerate(files):
         try:
-            logger.info(f"Receiving file {i+1}: {file.filename}")
+            logger.info(f"Processing file {i+1}/{len(files)}: {file.filename}")
             content = await file.read()
             if not content:
                 errors.append(f"{file.filename} is empty")
                 continue
 
+            logger.info(f"Reading file {file.filename} with size {len(content)} bytes")
+            
             if file.filename.endswith(".csv"):
                 delimiter = detect_csv_delimiter(content)
                 try:
                     df = pd.read_csv(io.BytesIO(content), delimiter=delimiter, encoding="utf-8")
                 except UnicodeDecodeError:
+                    logger.info(f"Trying latin1 encoding for {file.filename}")
                     df = pd.read_csv(io.BytesIO(content), delimiter=delimiter, encoding="latin1")
             else:
                 df = pd.read_excel(io.BytesIO(content))
+
+            logger.info(f"Successfully read {file.filename}: {df.shape[0]} rows, {df.shape[1]} columns")
 
             if df.empty:
                 errors.append(f"{file.filename} has no data")
@@ -80,13 +86,18 @@ async def upload_files(files: List[UploadFile] = File(...)):
             df.dropna(axis=1, how='all', inplace=True)
             df.columns = df.columns.str.strip().str.replace('\t', ' ').str.replace('\n', ' ')
 
-            # Optional: fix numeric values using commas
-            for col in df.columns:
-                if df[col].dtype == object:
-                    df[col] = df[col].astype(str).str.replace(',', '.')
+            # Optimized numeric conversion - only process first few columns to avoid hanging
+            logger.info(f"Processing {len(df.columns)} columns for {file.filename}")
+            for col in df.columns[:10]:  # Limit to first 10 columns to prevent hanging
+                if df[col].dtype == object and len(df[col].dropna()) > 0:
                     try:
-                        df[col] = df[col].astype(float)
-                    except:
+                        # Sample first 100 values to check if conversion is possible
+                        sample_values = df[col].dropna().head(100)
+                        if sample_values.astype(str).str.replace(',', '.').str.replace('.', '').str.isdigit().all():
+                            df[col] = df[col].astype(str).str.replace(',', '.')
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    except Exception as e:
+                        logger.warning(f"Could not convert column {col} to numeric: {str(e)}")
                         continue
 
             cleaned_rows, cleaned_cols = df.shape

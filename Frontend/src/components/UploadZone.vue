@@ -230,17 +230,30 @@
         this.showPlot = false;
   
         try {
+          console.log('Starting upload process...');
           const formData = new FormData();
-          this.files.forEach(file => formData.append('files', file));
+          this.files.forEach(file => {
+            formData.append('files', file);
+            console.log(`Added file: ${file.name} (${file.size} bytes)`);
+          });
   
+          console.log('Sending request to backend...');
           const response = await fetch('http://localhost:8000/upload', {
             method: 'POST',
             body: formData
           });
+          
+          console.log('Response received:', response.status, response.statusText);
+          
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          
           this.uploadResult = await response.json();
+          console.log('Upload result:', this.uploadResult);
         } catch (error) {
           console.error('Upload error:', error);
-          this.uploadResult = { error: 'Upload failed' };
+          this.uploadResult = { error: `Upload failed: ${error.message}` };
         } finally {
           this.uploading = false;
         }
