@@ -160,6 +160,10 @@ class CommandRequest(BaseModel):
 async def run_command(request: CommandRequest):
     command = request.command.strip().lower()
     df = pd.DataFrame(request.preview)
+    
+    logger.info(f"Received command: '{command}'")
+    logger.info(f"DataFrame shape: {df.shape}")
+    logger.info(f"Available columns: {df.columns.tolist()}")
 
     if df.empty:
         return {"error": "No data available to process the command."}
@@ -171,97 +175,133 @@ async def run_command(request: CommandRequest):
         result = df.head(n).to_dict(orient="records")
         return {"result": result}
 
-    # Plot top N <Column>
-    plot_top_match = re.match(r"plot top (\d+) (.+)", command)
-    if plot_top_match:
-        n = int(plot_top_match.group(1))
-        col = plot_top_match.group(2).strip()
-        if col in df.columns:
-            # Create matplotlib plot
-            plt.figure(figsize=(10, 6))
-            counts = df[col].value_counts().head(n)
-            plt.bar(range(len(counts)), counts.values, color='#6366f1')
-            plt.xticks(range(len(counts)), counts.index, rotation=45, ha='right')
-            plt.title(f'Top {n} {col}')
-            plt.xlabel(col)
-            plt.ylabel('Count')
-            plt.tight_layout()
+    # Plot top N <Column> - more flexible pattern
+    plot_patterns = [
+        r"plot top (\d+) (.+)",
+        r"plot (\d+) (.+)",
+        r"top (\d+) (.+) plot"
+    ]
+    
+    for pattern in plot_patterns:
+        plot_match = re.match(pattern, command)
+        if plot_match:
+            n = int(plot_match.group(1))
+            col = plot_match.group(2).strip()
+            logger.info(f"Plot command matched: n={n}, col='{col}'")
             
-            # Save plot to bytes
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
-            img_buffer.seek(0)
-            plt.close()
-            
-            # Convert to base64
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-            
-            return {
-                "plot_image": f"data:image/png;base64,{img_base64}",
-                "plot_type": "bar",
-                "title": f"Top {n} {col}"
-            }
-        else:
-            return {"error": f"Column '{col}' not found for plotting."}
+            if col in df.columns:
+                try:
+                    # Create matplotlib plot
+                    plt.figure(figsize=(10, 6))
+                    counts = df[col].value_counts().head(n)
+                    plt.bar(range(len(counts)), counts.values, color='#6366f1')
+                    plt.xticks(range(len(counts)), counts.index, rotation=45, ha='right')
+                    plt.title(f'Top {n} {col}')
+                    plt.xlabel(col)
+                    plt.ylabel('Count')
+                    plt.tight_layout()
+                    
+                    # Save plot to bytes
+                    img_buffer = io.BytesIO()
+                    plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
+                    img_buffer.seek(0)
+                    plt.close()
+                    
+                    # Convert to base64
+                    img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+                    
+                    logger.info(f"Successfully created plot for column '{col}'")
+                    return {
+                        "plot_image": f"data:image/png;base64,{img_base64}",
+                        "plot_type": "bar",
+                        "title": f"Top {n} {col}"
+                    }
+                except Exception as e:
+                    logger.error(f"Error creating plot: {str(e)}")
+                    return {"error": f"Error creating plot: {str(e)}"}
+            else:
+                logger.warning(f"Column '{col}' not found. Available columns: {df.columns.tolist()}")
+                return {"error": f"Column '{col}' not found. Available columns: {df.columns.tolist()}"}
 
-    # Heatmap <Col1> <Col2>
-    heatmap_match = re.match(r"heatmap (\w+) (\w+)", command)
-    if heatmap_match:
-        col1 = heatmap_match.group(1)
-        col2 = heatmap_match.group(2)
-        if col1 in df.columns and col2 in df.columns:
-            # Create heatmap using matplotlib
-            plt.figure(figsize=(10, 8))
+    # Heatmap <Col1> <Col2> - more flexible pattern
+    heatmap_patterns = [
+        r"heatmap (\w+) (\w+)",
+        r"heatmap (.+) (.+)",
+        r"(.+) (.+) heatmap"
+    ]
+    
+    for pattern in heatmap_patterns:
+        heatmap_match = re.match(pattern, command)
+        if heatmap_match:
+            col1 = heatmap_match.group(1).strip()
+            col2 = heatmap_match.group(2).strip()
+            logger.info(f"Heatmap command matched: col1='{col1}', col2='{col2}'")
             
-            # Create pivot table for heatmap
-            heatmap_data = df.groupby([col1, col2]).size().unstack(fill_value=0)
-            
-            plt.imshow(heatmap_data.values, cmap='viridis', aspect='auto')
-            plt.colorbar(label='Count')
-            plt.title(f'Heatmap: {col1} vs {col2}')
-            plt.xlabel(col1)
-            plt.ylabel(col2)
-            
-            # Set tick labels
-            if len(heatmap_data.columns) <= 20:  # Only show labels if not too many
-                plt.xticks(range(len(heatmap_data.columns)), heatmap_data.columns, rotation=45, ha='right')
-            if len(heatmap_data.index) <= 20:
-                plt.yticks(range(len(heatmap_data.index)), heatmap_data.index)
-            
-            plt.tight_layout()
-            
-            # Save plot to bytes
-            img_buffer = io.BytesIO()
-            plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
-            img_buffer.seek(0)
-            plt.close()
-            
-            # Convert to base64
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-            
-            return {
-                "plot_image": f"data:image/png;base64,{img_base64}",
-                "plot_type": "heatmap",
-                "title": f"Heatmap: {col1} vs {col2}"
-            }
-        else:
-            return {"error": f"One or both columns '{col1}', '{col2}' not found for heatmap."}
+            if col1 in df.columns and col2 in df.columns:
+                try:
+                    # Create heatmap using matplotlib
+                    plt.figure(figsize=(10, 8))
+                    
+                    # Create pivot table for heatmap
+                    heatmap_data = df.groupby([col1, col2]).size().unstack(fill_value=0)
+                    
+                    plt.imshow(heatmap_data.values, cmap='viridis', aspect='auto')
+                    plt.colorbar(label='Count')
+                    plt.title(f'Heatmap: {col1} vs {col2}')
+                    plt.xlabel(col1)
+                    plt.ylabel(col2)
+                    
+                    # Set tick labels
+                    if len(heatmap_data.columns) <= 20:  # Only show labels if not too many
+                        plt.xticks(range(len(heatmap_data.columns)), heatmap_data.columns, rotation=45, ha='right')
+                    if len(heatmap_data.index) <= 20:
+                        plt.yticks(range(len(heatmap_data.index)), heatmap_data.index)
+                    
+                    plt.tight_layout()
+                    
+                    # Save plot to bytes
+                    img_buffer = io.BytesIO()
+                    plt.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
+                    img_buffer.seek(0)
+                    plt.close()
+                    
+                    # Convert to base64
+                    img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+                    
+                    logger.info(f"Successfully created heatmap for columns '{col1}' and '{col2}'")
+                    return {
+                        "plot_image": f"data:image/png;base64,{img_base64}",
+                        "plot_type": "heatmap",
+                        "title": f"Heatmap: {col1} vs {col2}"
+                    }
+                except Exception as e:
+                    logger.error(f"Error creating heatmap: {str(e)}")
+                    return {"error": f"Error creating heatmap: {str(e)}"}
+            else:
+                missing_cols = []
+                if col1 not in df.columns:
+                    missing_cols.append(col1)
+                if col2 not in df.columns:
+                    missing_cols.append(col2)
+                logger.warning(f"Columns {missing_cols} not found. Available columns: {df.columns.tolist()}")
+                return {"error": f"Columns {missing_cols} not found. Available columns: {df.columns.tolist()}"}
 
-    elif "columns" in command:
+    # Check for other commands
+    if "columns" in command:
         return {
             "summary": {
                 "columns": df.columns.tolist(),
                 "shape": df.shape
             }
         }
-
-    elif "shape" in command or "size" in command:
+    
+    if "shape" in command or "size" in command:
         return {
             "summary": {
                 "columns": df.columns.tolist(),
                 "shape": df.shape
             }
         }
-
-    else:
-        return {"error": "Unknown command"}
+    
+    logger.warning(f"Unknown command: '{command}'")
+    return {"error": f"Unknown command: '{command}'. Try: 'show 5 rows', 'plot top 10 ColumnName', or 'heatmap Col1 Col2'"}
