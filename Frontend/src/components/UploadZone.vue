@@ -133,10 +133,19 @@
             </div>
             <div class="command-examples">
               <span class="example-tag" @click="userCommand = 'show 5 rows'">show 5 rows</span>
-              <span class="example-tag" @click="userCommand = 'plot top 10 Status'">plot top 10 Status</span>
-              <span class="example-tag" @click="userCommand = 'top 5 Status plot'">top 5 Status plot</span>
-              <span class="example-tag" @click="userCommand = 'heatmap Category Status'">heatmap Category Status</span>
+              <span class="example-tag" @click="userCommand = 'plot top 10 productsubcategoryid'">plot top 10 productsubcategoryid</span>
+              <span class="example-tag" @click="userCommand = 'top 5 name plot'">top 5 name plot</span>
+              <span class="example-tag" @click="userCommand = 'heatmap productcategoryid productsubcategoryid'">heatmap productcategoryid productsubcategoryid</span>
               <span class="example-tag" @click="userCommand = 'columns'">columns</span>
+            </div>
+            
+            <div v-if="uploadResult?.columns?.length" class="available-columns">
+              <p><strong>Available columns (case-insensitive):</strong></p>
+              <div class="column-list">
+                <span v-for="col in uploadResult.columns" :key="col" class="column-tag" @click="userCommand = `plot top 10 ${col.toLowerCase()}`">
+                  {{ col.toLowerCase() }}
+                </span>
+              </div>
             </div>
           </div>
         </section>
@@ -787,6 +796,32 @@
   background: #f8fafc;
   border-radius: 12px;
   border: 1px solid #e2e8f0;
+}
+
+.available-columns {
+  margin-top: 1rem;
+}
+
+.column-list {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.column-tag {
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.column-tag:hover {
+  background: #bae6fd;
+  transform: translateY(-1px);
 }
 
 @media (max-width: 768px) {

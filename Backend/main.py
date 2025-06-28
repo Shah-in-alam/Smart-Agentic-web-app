@@ -168,6 +168,10 @@ async def run_command(request: CommandRequest):
     if df.empty:
         return {"error": "No data available to process the command."}
 
+    # Create case-insensitive column mapping
+    column_mapping = {col.lower(): col for col in df.columns}
+    logger.info(f"Column mapping: {column_mapping}")
+
     # Match "show 5 rows", "get 10", "15 rows", etc.
     match = re.match(r"(show|get)?\s*(\d+)\s*(rows)?", command)
     if match:
@@ -186,10 +190,12 @@ async def run_command(request: CommandRequest):
         plot_match = re.match(pattern, command)
         if plot_match:
             n = int(plot_match.group(1))
-            col = plot_match.group(2).strip()
-            logger.info(f"Plot command matched: n={n}, col='{col}'")
+            col_lower = plot_match.group(2).strip().lower()
+            logger.info(f"Plot command matched: n={n}, col_lower='{col_lower}'")
             
-            if col in df.columns:
+            if col_lower in column_mapping:
+                col = column_mapping[col_lower]  # Get the original column name
+                logger.info(f"Found column: '{col}' for '{col_lower}'")
                 try:
                     # Create matplotlib plot
                     plt.figure(figsize=(10, 6))
@@ -220,8 +226,8 @@ async def run_command(request: CommandRequest):
                     logger.error(f"Error creating plot: {str(e)}")
                     return {"error": f"Error creating plot: {str(e)}"}
             else:
-                logger.warning(f"Column '{col}' not found. Available columns: {df.columns.tolist()}")
-                return {"error": f"Column '{col}' not found. Available columns: {df.columns.tolist()}"}
+                logger.warning(f"Column '{col_lower}' not found. Available columns: {list(column_mapping.keys())}")
+                return {"error": f"Column '{col_lower}' not found. Available columns: {list(column_mapping.keys())}"}
 
     # Heatmap <Col1> <Col2> - more flexible pattern
     heatmap_patterns = [
@@ -233,11 +239,14 @@ async def run_command(request: CommandRequest):
     for pattern in heatmap_patterns:
         heatmap_match = re.match(pattern, command)
         if heatmap_match:
-            col1 = heatmap_match.group(1).strip()
-            col2 = heatmap_match.group(2).strip()
-            logger.info(f"Heatmap command matched: col1='{col1}', col2='{col2}'")
+            col1_lower = heatmap_match.group(1).strip().lower()
+            col2_lower = heatmap_match.group(2).strip().lower()
+            logger.info(f"Heatmap command matched: col1_lower='{col1_lower}', col2_lower='{col2_lower}'")
             
-            if col1 in df.columns and col2 in df.columns:
+            if col1_lower in column_mapping and col2_lower in column_mapping:
+                col1 = column_mapping[col1_lower]  # Get the original column name
+                col2 = column_mapping[col2_lower]  # Get the original column name
+                logger.info(f"Found columns: '{col1}' and '{col2}'")
                 try:
                     # Create heatmap using matplotlib
                     plt.figure(figsize=(10, 8))
@@ -279,12 +288,12 @@ async def run_command(request: CommandRequest):
                     return {"error": f"Error creating heatmap: {str(e)}"}
             else:
                 missing_cols = []
-                if col1 not in df.columns:
-                    missing_cols.append(col1)
-                if col2 not in df.columns:
-                    missing_cols.append(col2)
-                logger.warning(f"Columns {missing_cols} not found. Available columns: {df.columns.tolist()}")
-                return {"error": f"Columns {missing_cols} not found. Available columns: {df.columns.tolist()}"}
+                if col1_lower not in column_mapping:
+                    missing_cols.append(col1_lower)
+                if col2_lower not in column_mapping:
+                    missing_cols.append(col2_lower)
+                logger.warning(f"Columns {missing_cols} not found. Available columns: {list(column_mapping.keys())}")
+                return {"error": f"Columns {missing_cols} not found. Available columns: {list(column_mapping.keys())}"}
 
     # Check for other commands
     if "columns" in command:
