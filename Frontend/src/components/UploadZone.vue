@@ -132,9 +132,11 @@
               </button>
             </div>
             <div class="command-examples">
-              <span class="example-tag">show 5 rows</span>
-              <span class="example-tag">plot top 10 Status</span>
-              <span class="example-tag">heatmap Category Status</span>
+              <span class="example-tag" @click="userCommand = 'show 5 rows'">show 5 rows</span>
+              <span class="example-tag" @click="userCommand = 'plot top 10 Status'">plot top 10 Status</span>
+              <span class="example-tag" @click="userCommand = 'top 5 Status plot'">top 5 Status plot</span>
+              <span class="example-tag" @click="userCommand = 'heatmap Category Status'">heatmap Category Status</span>
+              <span class="example-tag" @click="userCommand = 'columns'">columns</span>
             </div>
           </div>
         </section>
@@ -260,16 +262,19 @@
       },
       async sendCommand() {
         if (!this.userCommand.trim() || !this.uploadResult?.preview?.length) return;
-  
-        // Plot command detection
-        if (this.userCommand.toLowerCase().startsWith('plot') || this.userCommand.toLowerCase().startsWith('heatmap')) {
+
+        // Plot command detection - more flexible
+        const lowerCommand = this.userCommand.toLowerCase();
+        if (lowerCommand.includes('plot') || lowerCommand.includes('heatmap') || 
+            (lowerCommand.includes('top') && lowerCommand.includes('plot'))) {
           this.showPlot = true;
           this.commandResult = null;
         } else {
           this.showPlot = false;
         }
-  
+
         try {
+          console.log('Sending command:', this.userCommand);
           const response = await fetch('http://localhost:8000/command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -278,7 +283,15 @@
               preview: this.uploadResult.preview
             })
           });
+          
+          console.log('Command response received:', response.status);
+          
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          
           this.commandResult = await response.json();
+          console.log('Command result:', this.commandResult);
           
           // Handle plot image if present
           if (this.commandResult?.plot_image) {
@@ -291,7 +304,7 @@
           }
         } catch (error) {
           console.error('Command error:', error);
-          this.commandResult = { error: 'Command failed' };
+          this.commandResult = { error: `Command failed: ${error.message}` };
         }
       }
     }
