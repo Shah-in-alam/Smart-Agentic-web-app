@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import base64
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_squared_error
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -22,8 +25,8 @@ app = FastAPI(title="Smart Agentic Web App API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=False,  # Must be False when allow_origins is ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -49,11 +52,26 @@ async def upload_files(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
-    logger.info(f"Starting upload processing for {len(files)} files")
-    combined_df = pd.DataFrame()
+    # Validate number of files
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
+
+    # Validate total file size (50MB limit)
+    total_size = 0
+    for file in files:
+        content = await file.read()
+        total_size += len(content)
+        file.file.seek(0)  # Reset file pointer for later reading
+    
+    if total_size > 50 * 1024 * 1024:  # 50MB
+        raise HTTPException(status_code=400, detail="Total file size exceeds 50MB limit")
+
+    logger.info(f"Starting upload processing for {len(files)} files (total size: {total_size / (1024*1024):.2f} MB)")
+    individual_dfs = []
     processed_files = []
     errors = []
-
+    file_names = []
+    
     for i, file in enumerate(files):
         try:
             logger.info(f"Processing file {i+1}/{len(files)}: {file.filename}")
@@ -105,9 +123,12 @@ async def upload_files(files: List[UploadFile] = File(...)):
                 errors.append(f"{file.filename}: All rows removed after cleaning")
                 continue
 
+            # Add source_file column
             df["source_file"] = file.filename
-            df["processed_at"] = datetime.now().isoformat()
-            combined_df = pd.concat([combined_df, df], ignore_index=True)
+
+            # Store individual dataframe for joining
+            individual_dfs.append(df)
+            file_names.append(file.filename)
 
             processed_files.append({
                 "filename": file.filename,
@@ -117,7 +138,8 @@ async def upload_files(files: List[UploadFile] = File(...)):
                 "cleaned_columns": cleaned_cols,
                 "removed_rows": original_rows - cleaned_rows,
                 "removed_columns": original_cols - cleaned_cols,
-                "columns": df.columns.tolist()
+                "columns": df.columns.tolist(),
+                "file_size": len(content)
             })
 
         except Exception as e:
@@ -125,22 +147,50 @@ async def upload_files(files: List[UploadFile] = File(...)):
             errors.append(f"{file.filename}: {str(e)}")
             continue
 
+    # Smart join all dataframes
+    join_info = {}
+    if len(individual_dfs) > 1:
+        logger.info("Attempting smart join of multiple files")
+        join_candidates = detect_join_keys(individual_dfs)
+        join_info = {
+            "join_candidates": join_candidates,
+            "join_strategy": "smart_join" if join_candidates else "concatenate"
+        }
+        
+        if join_candidates:
+            best_key = max(join_candidates.keys(), key=lambda k: len(join_candidates[k]))
+            join_info["best_join_key"] = best_key
+            join_info["files_joined"] = len(join_candidates[best_key])
+            logger.info(f"Smart join using key: {best_key}")
+        else:
+            logger.info("No common ID columns found, concatenating files")
+    
+    combined_df = smart_join_dataframes(individual_dfs, file_names)
+    combined_df["processed_at"] = datetime.now().isoformat()
+
     response = {
         "total_files_received": len(files),
         "files_processed": len(processed_files),
         "files_with_errors": len(errors),
+        "total_size_mb": f"{total_size / (1024*1024):.2f}",
         "processed_files": processed_files,
-        "errors": errors
+        "errors": errors,
+        "join_info": join_info
     }
 
     if not combined_df.empty:
+        # Robustly replace inf, -inf, and NaN with None for JSON serialization
+        combined_df = combined_df.applymap(lambda x: None if pd.isnull(x) or x in [np.inf, -np.inf] else x)
+        if 'source_file' in combined_df.columns:
+            combined_df = combined_df.drop(columns=['source_file'])
         response["preview"] = combined_df.head(10).to_dict(orient="records")
         response["columns"] = combined_df.columns.tolist()
         response["data_types"] = combined_df.dtypes.astype(str).to_dict()
         response["summary"] = {
             "total_rows": len(combined_df),
             "total_columns": len(combined_df.columns),
-            "memory_usage": f"{combined_df.memory_usage(deep=True).sum() / (1024):.2f} KB"
+            "memory_usage": f"{combined_df.memory_usage(deep=True).sum() / (1024):.2f} KB",
+            "source_files": []
         }
     else:
         response["preview"] = []
@@ -312,5 +362,140 @@ async def run_command(request: CommandRequest):
             }
         }
     
+    # New command: show files summary
+    if "files summary" in command or "file summary" in command:
+        if "source_file" in df.columns:
+            file_summary = df.groupby("source_file").agg({
+                "source_file": "count"
+            }).rename(columns={"source_file": "rows"}).to_dict("index")
+            
+            return {
+                "files_summary": {
+                    "total_files": len(file_summary),
+                    "files": file_summary,
+                    "total_rows": len(df)
+                }
+            }
+        else:
+            return {"error": "No file source information available"}
+    
+    # New command: show join info
+    if "join info" in command or "join details" in command:
+        # This will be handled by the frontend using the join_info from upload response
+        return {"message": "Join information is available in the upload response"}
+    
+    # New command: analyze joins
+    if "analyze joins" in command or "join analysis" in command:
+        if "source_file" in df.columns:
+            # Analyze the joined data
+            file_analysis = {}
+            for file_name in df["source_file"].unique():
+                file_data = df[df["source_file"] == file_name]
+                file_analysis[file_name] = {
+                    "rows": len(file_data),
+                    "columns": len(file_data.columns),
+                    "unique_values": {}
+                }
+                
+                # Count unique values in key columns
+                for col in file_data.columns:
+                    if col != "source_file" and col != "processed_at":
+                        unique_count = file_data[col].nunique()
+                        file_analysis[file_name]["unique_values"][col] = unique_count
+            
+            return {
+                "join_analysis": {
+                    "total_files": len(file_analysis),
+                    "total_rows": len(df),
+                    "file_analysis": file_analysis,
+                    "join_columns": [col for col in df.columns if any(keyword in col.lower() for keyword in ['id', 'code', 'key', 'ref'])]
+                }
+            }
+        else:
+            return {"error": "No file source information available"}
+    
     logger.warning(f"Unknown command: '{command}'")
-    return {"error": f"Unknown command: '{command}'. Try: 'show 5 rows', 'plot top 10 ColumnName', or 'heatmap Col1 Col2'"}
+    return {"error": f"Unknown command: '{command}'. Try: 'show 5 rows', 'plot top 10 ColumnName', 'heatmap Col1 Col2', 'show files summary', 'join info', or 'analyze joins'"}
+
+def detect_join_keys(dfs):
+    """Detect potential join keys across multiple dataframes, prioritizing 'id' columns"""
+    join_candidates = {}
+    all_columns = set()
+    for df in dfs:
+        all_columns.update(df.columns)
+    # Prioritize 'id' columns
+    id_like_columns = [col for col in all_columns if 'id' in col.lower()]
+    prioritized_columns = id_like_columns + [col for col in all_columns if col not in id_like_columns]
+    for col in prioritized_columns:
+        present_in = [i for i, df in enumerate(dfs) if col in df.columns]
+        if len(present_in) > 1:
+            join_candidates[col] = present_in
+    return join_candidates
+
+def smart_join_dataframes(dfs, file_names):
+    """Intelligently join multiple dataframes based on common ID columns using robust inner joins"""
+    if len(dfs) <= 1:
+        return dfs[0] if dfs else pd.DataFrame()
+    logger.info(f"Attempting to join {len(dfs)} dataframes")
+    join_candidates = detect_join_keys(dfs)
+    logger.info(f"Found join candidates: {join_candidates}")
+    if not join_candidates:
+        logger.info("No common ID columns found, concatenating vertically")
+        combined_df = pd.concat(dfs, ignore_index=True)
+        return combined_df
+    # Pick the id-like join key with the most files
+    best_join_key = None
+    max_common_files = 0
+    for col, file_indices in join_candidates.items():
+        if len(file_indices) > max_common_files:
+            max_common_files = len(file_indices)
+            best_join_key = col
+    if best_join_key:
+        logger.info(f"Using '{best_join_key}' as join key (inner join)")
+        files_with_key = join_candidates[best_join_key]
+        result_df = dfs[files_with_key[0]].copy()
+        for i in files_with_key[1:]:
+            df_to_join = dfs[i].copy()
+            result_df = result_df.merge(
+                df_to_join,
+                on=best_join_key,
+                how='inner',
+                suffixes=('', f'_{file_names[i].split(".")[0]}')
+            )
+            logger.info(f"Inner joined with {file_names[i]}, result shape: {result_df.shape}")
+        # Add dataframes that don't have the join key (concatenate)
+        remaining_files = [i for i in range(len(dfs)) if i not in files_with_key]
+        if remaining_files:
+            logger.info(f"Concatenating {len(remaining_files)} files without join key")
+            remaining_dfs = [dfs[i].copy() for i in remaining_files]
+            remaining_combined = pd.concat(remaining_dfs, ignore_index=True)
+            result_df = pd.concat([result_df, remaining_combined], ignore_index=True)
+        return result_df
+    logger.info("No suitable join key found, concatenating vertically")
+    combined_df = pd.concat(dfs, ignore_index=True)
+    return combined_df
+
+# Regression endpoint
+@app.post("/regression")
+async def regression(
+    data: dict = Body(...),
+    target: str = Body(...),
+    features: list = Body(...)
+):
+    df = pd.DataFrame(data)
+    # Drop rows with missing values in features or target
+    df = df.dropna(subset=features + [target])
+    X = df[features]
+    y = df[target]
+    model = LinearRegression()
+    model.fit(X, y)
+    y_pred = model.predict(X)
+    r2 = r2_score(y, y_pred)
+    mse = mean_squared_error(y, y_pred)
+    return {
+        "r2": r2,
+        "mse": mse,
+        "coefficients": dict(zip(features, model.coef_)),
+        "intercept": model.intercept_,
+        "predictions": y_pred.tolist()
+    }
